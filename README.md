@@ -125,8 +125,3 @@ On a full-stack restart with preserved volumes, the job resumes from committed c
 ## Extending
 
 Add 5-minute/hourly windows (new sink tables + `INSERT`s in the same statement set), anomaly detection with `MATCH_RECOGNIZE` (e.g. moisture below 20 for 3 consecutive windows as an irrigation trigger), or Avro + Schema Registry for the event contract.
-
-## License
-
-MIT
->>>>>>> 8435295 (Agristream project updates)

@@ -1,0 +1,228 @@
+# Agristream: Kafka (KRaft) -> PyFlink -> PostgreSQL (+ optional Prometheus/Grafana/Kafka UI)
+#
+#   cp .env.example .env && docker compose up -d --build
+#   docker compose --profile monitoring up -d       # adds Grafana, Prometheus, Kafka UI
+
+x-flink: &flink
+  image: agristream-flink:1.18.1
+  build: ./flink
+  restart: unless-stopped
+  volumes:
+    - flink-checkpoints:/opt/flink/checkpoints
+    - flink-savepoints:/opt/flink/savepoints
+
+services:
+  # ------------------------------------------------------------------ Kafka
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:29092:29092"      # host access (EXTERNAL listener)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:3.7.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        T=/opt/kafka/bin/kafka-topics.sh
+        $$T --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic sensor.readings --partitions 3 --replication-factor 1 \
+            --config retention.ms=604800000
+        $$T --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic sensor.readings.dlq --partitions 1 --replication-factor 1 \
+            --config retention.ms=1209600000
+        $$T --bootstrap-server kafka:9092 --list
+
+  # --------------------------------------------------------------- PostgreSQL
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_ADMIN_USER:?set in .env}
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD:?set in .env}
+      POSTGRES_DB: ${PG_DB:?set in .env}
+      FLINK_DB_USER: ${FLINK_DB_USER:?set in .env}
+      FLINK_DB_PASSWORD: ${FLINK_DB_PASSWORD:?set in .env}
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER:?set in .env}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set in .env}
+      RETENTION_DB_USER: ${RETENTION_DB_USER:?set in .env}
+      RETENTION_DB_PASSWORD: ${RETENTION_DB_PASSWORD:?set in .env}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  pg-retention:
+    image: postgres:16
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["bash", "/retention.sh"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${PG_DB}
+      PGUSER: ${RETENTION_DB_USER}
+      PGPASSWORD: ${RETENTION_DB_PASSWORD}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+    volumes:
+      - ./scripts/retention.sh:/retention.sh:ro
+
+  # -------------------------------------------------------------------- Flink
+  jobmanager:
+    <<: *flink
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: jobmanager"
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  taskmanager:
+    <<: *flink
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: jobmanager"
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+
+  # One-shot, idempotent submitter: starts the job unless it is already running.
+  flink-job:
+    <<: *flink
+    restart: on-failure
+    entrypoint: ["/opt/flink/bin/submit-job.sh"]
+    environment:
+      JOB_MANAGER: jobmanager:8081
+      PIPELINE_NAME: agristream-aggregate
+      KAFKA_BOOTSTRAP: kafka:9092
+      PG_HOST: postgres
+      PG_DB: ${PG_DB}
+      PG_USER: ${FLINK_DB_USER}
+      PG_PASSWORD: ${FLINK_DB_PASSWORD}
+      WATERMARK_DELAY_SECONDS: ${WATERMARK_DELAY_SECONDS:-10}
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      taskmanager:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+
+  # ----------------------------------------------------------------- Producer
+  producer:
+    build: ./producer
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP: kafka:9092
+      TOPIC: sensor.readings
+      RATE_PER_SEC: ${RATE_PER_SEC:-50}
+      NUM_SENSORS: ${NUM_SENSORS:-30}
+      NUM_FIELDS: ${NUM_FIELDS:-5}
+      LATE_RATIO: ${LATE_RATIO:-0.03}
+      MAX_LATENESS_MS: ${MAX_LATENESS_MS:-8000}
+      MALFORMED_RATIO: ${MALFORMED_RATIO:-0.005}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------- Monitoring
+  kafka-ui:
+    profiles: ["monitoring"]
+    image: provectuslabs/kafka-ui:v0.7.2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    profiles: ["monitoring"]
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      PG_DB: ${PG_DB}
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  kafka-data:
+  pgdata:
+  flink-checkpoints:
+  flink-savepoints:
+  prometheus-data:
+  grafana-data:

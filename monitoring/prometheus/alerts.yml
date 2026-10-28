@@ -1,0 +1,17 @@
+groups:
+  - name: agristream
+    rules:
+      - alert: FlinkJobNotRunning
+        expr: flink_jobmanager_numRunningJobs < 1
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "No Flink job is running"}
+      - alert: FlinkCheckpointsFailing
+        expr: increase(flink_jobmanager_job_numberOfFailedCheckpoints[10m]) > 0
+        labels: {severity: warning}
+        annotations: {summary: "Flink checkpoints are failing"}
+      - alert: FlinkTargetDown
+        expr: up{job=~"flink-.*"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "Flink metrics endpoint {{ $labels.instance }} is down"}

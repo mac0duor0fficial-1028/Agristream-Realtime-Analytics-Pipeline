@@ -1,0 +1,225 @@
+{
+  "uid": "agristream-overview",
+  "title": "AgriStream - Field Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "tags": [
+    "agristream"
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Avg soil moisture per field (%)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agristream-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "agristream-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT window_start AS time, field_id AS metric, avg_soil_moisture FROM field_metrics_1m WHERE $__timeFilter(window_start) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Avg air temperature per field (\u00b0C)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agristream-pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "agristream-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT window_start AS time, field_id AS metric, avg_air_temp_c FROM field_metrics_1m WHERE $__timeFilter(window_start) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Readings ingested per minute",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agristream-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "agristream-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT window_start AS time, sum(reading_count) AS readings FROM field_metrics_1m WHERE $__timeFilter(window_start) GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Avg humidity per field (%)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agristream-pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "agristream-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT window_start AS time, field_id AS metric, avg_humidity FROM field_metrics_1m WHERE $__timeFilter(window_start) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Latest window per field",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agristream-pg"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 14,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "agristream-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT DISTINCT ON (field_id) field_id, window_start, reading_count, round(avg_soil_moisture::numeric,2) AS avg_soil_moisture, round(avg_soil_temp_c::numeric,2) AS avg_soil_temp_c, round(avg_ph::numeric,2) AS avg_ph FROM field_metrics_1m ORDER BY field_id, window_start DESC"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Fields needing irrigation (moisture < 20%, latest window)",
+      "datasource": {
+        "type": "postgres",
+        "uid": "agristream-pg"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 16,
+        "w": 10,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "agristream-pg"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT count(*) AS fields FROM (SELECT DISTINCT ON (field_id) field_id, avg_soil_moisture FROM field_metrics_1m ORDER BY field_id, window_start DESC) t WHERE avg_soil_moisture < 20"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# Agristream-Realtime-Analytics-Pipeline
-Production-ready streaming pipeline leveraging Apache Kafka for data ingestion, PyFlink for real-time windowed aggregation, and PostgreSQL for operational analytics storage. Containerized end-to-end with Docker
-=======
 # Agristream Realtime Analytics Pipeline
 
 Production-style streaming pipeline for agricultural IoT telemetry: **Apache Kafka** (KRaft) for ingestion, **PyFlink** for event-time windowed aggregation, and **PostgreSQL** for operational analytics. Containerized end-to-end with Docker Compose, with optional Prometheus + Grafana observability.
@@ -129,8 +125,3 @@ On a full-stack restart with preserved volumes, the job resumes from committed c
 ## Extending
 
 Add 5-minute/hourly windows (new sink tables + `INSERT`s in the same statement set), anomaly detection with `MATCH_RECOGNIZE` (e.g. moisture below 20 for 3 consecutive windows as an irrigation trigger), or Avro + Schema Registry for the event contract.
-
-## License
-
-MIT
->>>>>>> 8435295 (Agristream project updates)
